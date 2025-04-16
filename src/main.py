@@ -9,8 +9,9 @@ DATABASE_URL = "tasks.db"
 
 class Task(BaseModel):
     id: Optional[int] = None
-    title: str
-    description: Optional[str] = None
+    codigoEstudiante: int
+    nombre: Optional[str] = None
+    descripcion: Optional[str] = None
     done: bool = False
 
 def create_connection():
@@ -24,8 +25,9 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            description TEXT,
+            codigoEstudiante INTEGER NOT NULL,
+            nombre TEXT,
+            descripcion TEXT,
             done BOOLEAN NOT NULL DEFAULT 0
         )
     """)
@@ -51,8 +53,8 @@ async def startup_event():
 async def create_task(task: Task):
     conn = create_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO tasks (title, description, done) VALUES (?, ?, ?)",
-                   (task.title, task.description, task.done))
+    cursor.execute("INSERT INTO tasks (codigoEstudiante, nombre, descripcion, done) VALUES (?, ?, ?, ?)",
+                   (task.codigoEstudiante, task.nombre, task.descripcion, task.done))
     conn.commit()
     task_id = cursor.lastrowid
     cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -84,8 +86,8 @@ async def read_task(task_id: int):
 async def update_task(task_id: int, updated_task: Task):
     conn = create_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE tasks SET title=?, description=?, done=? WHERE id=?",
-                   (updated_task.title, updated_task.description, updated_task.done, task_id))
+    cursor.execute("UPDATE tasks SET codigoEstudiante=?, nombre=?, descripcion=?, done=? WHERE id=?",
+                   (updated_task.codigoEstudiante, updated_task.nombre, updated_task.descripcion, updated_task.done, task_id))
     conn.commit()
     cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
     updated_task_from_db = cursor.fetchone()
