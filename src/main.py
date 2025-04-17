@@ -27,7 +27,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             codigoEstudiante INTEGER NOT NULL,
             nombre TEXT,
-            descripcion TEXT,
+            descripcion TEXT NOT NULL,
             done BOOLEAN NOT NULL DEFAULT 0
         )
     """)
