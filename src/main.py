@@ -12,7 +12,6 @@ class Task(BaseModel):
     codigoEstudiante: int
     nombre: Optional[str] = None
     descripcion: Optional[str] = None
-    done: bool = False
 
 def create_connection():
     conn = sqlite3.connect(DATABASE_URL)
@@ -27,8 +26,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             codigoEstudiante INTEGER NOT NULL,
             nombre TEXT,
-            descripcion TEXT NOT NULL,
-            done BOOLEAN NOT NULL DEFAULT 0
+            descripcion TEXT NOT NULL
         )
     """)
     conn.commit()
@@ -53,8 +51,8 @@ async def startup_event():
 async def create_task(task: Task):
     conn = create_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO tasks (codigoEstudiante, nombre, descripcion, done) VALUES (?, ?, ?, ?)",
-                   (task.codigoEstudiante, task.nombre, task.descripcion, task.done))
+    cursor.execute("INSERT INTO tasks (codigoEstudiante, nombre, descripcion) VALUES (?, ?, ?)",
+                   (task.codigoEstudiante, task.nombre, task.descripcion))
     conn.commit()
     task_id = cursor.lastrowid
     cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
@@ -86,10 +84,10 @@ async def read_task(task_id: int):
 async def update_task(task_id: int, updated_task: Task):
     conn = create_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE tasks SET codigoEstudiante=?, nombre=?, descripcion=?, done=? WHERE id=?",
-                   (updated_task.codigoEstudiante, updated_task.nombre, updated_task.descripcion, updated_task.done, task_id))
+    cursor.execute("UPDATE tasks SET codigoEstudiante=?, nombre=?, descripcion=? WHERE id=?",
+                   (updated_task.codigoEstudiante, updated_task.nombre, updated_task.descripcion, task_id))
     conn.commit()
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id))
     updated_task_from_db = cursor.fetchone()
     conn.close()
     if updated_task_from_db is None:
