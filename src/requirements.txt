@@ -8,3 +8,4 @@ python-multipart>=0.0.6
 pyjwt>=2.8.0
 python-dateutil>=2.8.2
 zoneinfo>=0.2.1;python_version<"3.9"
+python-dotenv

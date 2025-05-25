@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, validator, Field, EmailStr
 import sqlite3
 import os
+from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import zoneinfo
 import jwt
@@ -21,10 +22,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Constantes y configuración
-DATABASE_URL = "db/isaa.db"
-SECRET_KEY = "pene"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+load_dotenv()
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+DATABASE_URL = os.getenv("DATABASE_URL", "db/isaa.db")  # ← ESTA LÍNEA
+
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY no configurada en .env")
 
 # Configuración de seguridad
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -706,10 +712,10 @@ async def search_advanced(
         
         # Procesar campos simples
         if cor:
-            correo_condition, correo_values = procesar_campo_simple(cor, "u.correo", like=True)
-            if correo_condition:
-                or_conditions.append(f"({correo_condition})")
-                valores.extend(correo_values)
+            cor_condition, cor_values = procesar_campo_simple(cor, "u.correo", like=True)
+            if cor_condition:
+                or_conditions.append(f"({cor_condition})")
+                valores.extend(cor_values)
         
         if cod:
             cod_condition, cod_values = procesar_campo_simple(cod, "u.codigo")
@@ -761,7 +767,7 @@ async def search_advanced(
                         valores_campo = valor.split(",") if valor else []
                         
                         if campo == "cor":
-                            cond, vals = procesar_campo_simple(valores_campo, "u.cor", like=True)
+                            cond, vals = procesar_campo_simple(valores_campo, "u.correo", like=True)
                             if cond:
                                 and_conditions.append(f"({cond})")
                                 and_values.extend(vals)
