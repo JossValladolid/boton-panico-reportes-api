@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any, Union, Annotated
 from contextlib import contextmanager
-from fastapi import FastAPI, HTTPException, Query, Depends, status, Response
+from fastapi import FastAPI, HTTPException, Query, Depends, status, Response, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, validator, Field, EmailStr
@@ -13,6 +13,7 @@ import jwt
 from passlib.context import CryptContext
 import logging
 from enum import Enum
+import json
 
 # Configuración de logging
 logging.basicConfig(
@@ -27,7 +28,7 @@ load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
-DATABASE_URL = os.getenv("DATABASE_URL", "db/isaa.db")  # ← ESTA LÍNEA
+DATABASE_URL = os.getenv("DATABASE_URL", "db/isaa.db")
 
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY no configurada en .env")
@@ -47,7 +48,7 @@ class EstadoTarea(str, Enum):
 class Usuario(BaseModel):
     id: Optional[int] = None
     codigo: str
-    correo: str  # Cambio de nombre a correo
+    correo: str
     contrasena: Optional[str] = None
     rol: str = "usuario"
     
@@ -61,7 +62,6 @@ class Usuario(BaseModel):
     def correo_valido(cls, v):
         if not v or not v.strip():
             raise ValueError('El correo no puede estar vacío')
-        # Validación básica de formato de email
         if '@' not in v or '.' not in v.split('@')[1]:
             raise ValueError('El formato del correo no es válido')
         return v.strip().lower()
@@ -70,6 +70,7 @@ class UsuarioResponse(BaseModel):
     id: int
     codigo: str
     correo: str
+    rol: str
 
 class Task(BaseModel):
     id: Optional[int] = None
@@ -78,11 +79,18 @@ class Task(BaseModel):
     estado: Optional[EstadoTarea] = EstadoTarea.ACTIVO
     fecha: Optional[str] = None  # dd/mm/yyyy
     hora: Optional[str] = None   # HH:MM
+    razon: Optional[str] = Field(None, min_length=1)  # Nueva columna razon
     
     @validator('descripcion')
     def descripcion_no_vacia(cls, v):
         if v is not None and not v.strip():
             raise ValueError('La descripción no puede estar vacía')
+        return v.strip() if v else None
+    
+    @validator('razon')
+    def razon_no_vacia(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError('La razón no puede estar vacía')
         return v.strip() if v else None
 
 class TaskResponse(BaseModel):
@@ -94,6 +102,38 @@ class TaskResponse(BaseModel):
     estado: Optional[str] = EstadoTarea.ACTIVO
     fecha: Optional[str] = None
     hora: Optional[str] = None
+    razon: Optional[str] = None  # Nueva columna razon
+
+# Nuevos modelos para formularios
+class Formulario(BaseModel):
+    id: Optional[int] = None
+    task_id: int
+    nombres: str = Field(..., min_length=1)
+    apellido_paterno: str = Field(..., min_length=1)
+    apellido_materno: str = Field(..., min_length=1)
+    codigo_udg: str = Field(..., min_length=1)
+    fecha_nacimiento: str = Field(..., min_length=1)  # formato: YYYY-MM-DD
+    descripcion_detallada: str = Field(..., min_length=1)
+    fecha_creacion: Optional[str] = None
+    hora_creacion: Optional[str] = None
+    
+    @validator('nombres', 'apellido_paterno', 'apellido_materno', 'codigo_udg', 'descripcion_detallada')
+    def campos_no_vacios(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Este campo no puede estar vacío')
+        return v.strip()
+
+class FormularioResponse(BaseModel):
+    id: int
+    task_id: int
+    nombres: str
+    apellido_paterno: str
+    apellido_materno: str
+    codigo_udg: str
+    fecha_nacimiento: str
+    descripcion_detallada: str
+    fecha_creacion: Optional[str] = None
+    hora_creacion: Optional[str] = None
 
 class Token(BaseModel):
     access_token: str
@@ -133,7 +173,6 @@ def get_current_local_date_time():
         return fecha, hora
     except Exception as e:
         logger.error(f"Error al obtener fecha y hora: {e}")
-        # Fallback a UTC si hay error
         now = datetime.utcnow()
         fecha = now.strftime("%d/%m/%Y")
         hora = now.strftime("%H:%M")
@@ -224,11 +263,10 @@ def init_db():
             users_table_exists = cursor.fetchone()
 
             if not users_table_exists:
-                # Creamos tabla de usuarios con correo en lugar de nombre
                 cursor.execute("""
                     CREATE TABLE usuarios (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        rol TEXT 'usuario',
+                        rol TEXT DEFAULT 'usuario',
                         codigo TEXT UNIQUE NOT NULL,
                         correo TEXT NOT NULL,
                         contrasena TEXT NOT NULL
@@ -240,7 +278,6 @@ def init_db():
             tasks_table_exists = cursor.fetchone()
 
             if not tasks_table_exists:
-                # Creamos tabla con referencia a usuarios
                 cursor.execute("""
                     CREATE TABLE tasks (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,9 +286,39 @@ def init_db():
                         estado TEXT DEFAULT 'Activo',
                         fecha TEXT,
                         hora TEXT,
+                        razon TEXT,
                         FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
                     )
                 """)
+            else:
+                # Verificar si la columna razon existe, si no, agregarla
+                cursor.execute("PRAGMA table_info(tasks)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'razon' not in columns:
+                    cursor.execute("ALTER TABLE tasks ADD COLUMN razon TEXT")
+                    logger.info("Columna 'razon' agregada a la tabla tasks")
+
+            # Nueva tabla de formularios (sin archivos)
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='formularios'")
+            formularios_table_exists = cursor.fetchone()
+
+            if not formularios_table_exists:
+                cursor.execute("""
+                    CREATE TABLE formularios (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        task_id INTEGER NOT NULL,
+                        nombres TEXT NOT NULL,
+                        apellido_paterno TEXT NOT NULL,
+                        apellido_materno TEXT NOT NULL,
+                        codigo_udg TEXT NOT NULL,
+                        fecha_nacimiento TEXT NOT NULL,
+                        descripcion_detallada TEXT NOT NULL,
+                        fecha_creacion TEXT,
+                        hora_creacion TEXT,
+                        FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+                    )
+                """)
+                logger.info("Tabla 'formularios' creada exitosamente")
                 
             # Añadir índices para mejorar rendimiento
             cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_usuario_id'")
@@ -266,6 +333,19 @@ def init_db():
             if not cursor.fetchone():
                 cursor.execute("CREATE INDEX idx_usuarios_correo ON usuarios(correo)")
             
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_razon'")
+            if not cursor.fetchone():
+                cursor.execute("CREATE INDEX idx_tasks_razon ON tasks(razon)")
+
+            # Nuevos índices para formularios
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_formularios_task_id'")
+            if not cursor.fetchone():
+                cursor.execute("CREATE INDEX idx_formularios_task_id ON formularios(task_id)")
+
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_formularios_codigo_udg'")
+            if not cursor.fetchone():
+                cursor.execute("CREATE INDEX idx_formularios_codigo_udg ON formularios(codigo_udg)")
+            
             conn.commit()
             logger.info("Base de datos inicializada correctamente")
     except Exception as e:
@@ -276,15 +356,15 @@ def init_db():
         )
 
 # Inicialización de FastAPI
-app = FastAPI(title="Task Manager API", version="1.2.0")
+app = FastAPI(title="Task Manager API", version="1.4.0")
 
 # Middleware CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500", "http://127.0.0.1:5501", ],  # Permite todas las origenes (ajústalo en producción)
+    allow_origins=["http://127.0.0.1:5500", "http://127.0.0.1:5501"],
     allow_credentials=True,
-    allow_methods=["*"],  # Permite todos los métodos HTTP
-    allow_headers=["*"],  # Permite todas las cabeceras
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 def get_current_admin(current_user: dict = Depends(get_current_user)):
@@ -294,7 +374,6 @@ def get_current_admin(current_user: dict = Depends(get_current_user)):
             detail="Acceso restringido a administradores"
         )
     return current_user
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -328,12 +407,10 @@ async def login_for_access_token(
             expires_delta=access_token_expires
         )
 
-        # Añadir cabecera de caché para evitar almacenamiento del token
         response.headers["Cache-Control"] = "no-store"
         
         return {"access_token": access_token, "token_type": "bearer"}
     except HTTPException:
-        # Re-lanzar las excepciones HTTP ya formateadas
         raise
     except Exception as e:
         logger.error(f"Error inesperado en login: {e}")
@@ -349,7 +426,6 @@ async def login_for_access_token(
 async def create_user(usuario: Usuario):
     """Crea un nuevo usuario."""
     try:
-        # Validación adicional
         if not usuario.codigo or not usuario.correo or not usuario.contrasena:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -362,7 +438,6 @@ async def create_user(usuario: Usuario):
                 detail="El código de usuario ya está en uso"
             )
         
-        # Verificar si el correo ya está en uso
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM usuarios WHERE correo = ?", (usuario.correo,))
@@ -383,7 +458,7 @@ async def create_user(usuario: Usuario):
             conn.commit()
             user_id = cursor.lastrowid
             
-            cursor.execute("SELECT id, codigo, correo FROM usuarios WHERE id = ?", (user_id,))
+            cursor.execute("SELECT id, codigo, correo, rol FROM usuarios WHERE id = ?", (user_id,))
             new_user = cursor.fetchone()
             
             if not new_user:
@@ -408,7 +483,7 @@ async def read_users(current_user: dict = Depends(get_current_user)):
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, codigo, correo FROM usuarios")
+            cursor.execute("SELECT id, codigo, correo, rol FROM usuarios")
             users = cursor.fetchall()
             return [UsuarioResponse(**dict(user)) for user in users]
     except Exception as e:
@@ -424,7 +499,7 @@ async def read_user(user_id: int, current_user: dict = Depends(get_current_user)
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, codigo, correo FROM usuarios WHERE id = ?", (user_id,))
+            cursor.execute("SELECT id, codigo, correo, rol FROM usuarios WHERE id = ?", (user_id,))
             user = cursor.fetchone()
             
         if user is None:
@@ -442,86 +517,6 @@ async def read_user(user_id: int, current_user: dict = Depends(get_current_user)
             detail="Error al recuperar información del usuario"
         )
 
-@app.put("/usuarios/{user_id}", response_model=UsuarioResponse)
-async def update_user(
-    user_id: int, 
-    updated_user: Usuario, 
-    current_user: dict = Depends(get_current_user)
-):
-    """Actualiza un usuario existente."""
-    try:
-        # Verificar si el usuario tiene permisos para actualizar este usuario
-        if current_user["id"] != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permiso para actualizar este usuario"
-            )
-        
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Verificar que el usuario existe
-            cursor.execute("SELECT id FROM usuarios WHERE id = ?", (user_id,))
-            if not cursor.fetchone():
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Usuario no encontrado"
-                )
-            
-            # Si se quiere cambiar el código, verificar que no esté en uso
-            if updated_user.codigo != current_user["codigo"]:
-                cursor.execute("SELECT id FROM usuarios WHERE codigo = ? AND id != ?", 
-                              (updated_user.codigo, user_id))
-                if cursor.fetchone():
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="El código de usuario ya está en uso por otro usuario"
-                    )
-            
-            # Si se quiere cambiar el correo, verificar que no esté en uso
-            if updated_user.correo != current_user["correo"]:
-                cursor.execute("SELECT id FROM usuarios WHERE correo = ? AND id != ?", 
-                              (updated_user.correo, user_id))
-                if cursor.fetchone():
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="El correo ya está en uso por otro usuario"
-                    )
-            
-            # Si se proporciona una contraseña, actualizarla
-            if updated_user.contrasena:
-                hashed_password = get_password_hash(updated_user.contrasena)
-                cursor.execute(
-                    "UPDATE usuarios SET codigo=?, correo=?, contrasena=? WHERE id=?",
-                    (updated_user.codigo, updated_user.correo, hashed_password, user_id)
-                )
-            else:
-                cursor.execute(
-                    "UPDATE usuarios SET codigo=?, correo=? WHERE id=?",
-                    (updated_user.codigo, updated_user.correo, user_id)
-                )
-            
-            conn.commit()
-            
-            cursor.execute("SELECT id, codigo, correo FROM usuarios WHERE id = ?", (user_id,))
-            updated_user_from_db = cursor.fetchone()
-            
-            if updated_user_from_db is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail="Usuario no encontrado después de la actualización"
-                )
-            
-            return UsuarioResponse(**dict(updated_user_from_db))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al actualizar usuario {user_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al actualizar el usuario"
-        )
-
 #########################################
 # Endpoints de tareas
 
@@ -533,7 +528,7 @@ async def read_task(task_id: int, current_user: dict = Depends(get_current_user)
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
                 FROM tasks t
                 JOIN usuarios u ON t.usuario_id = u.id
                 WHERE t.id = ?
@@ -555,18 +550,246 @@ async def read_task(task_id: int, current_user: dict = Depends(get_current_user)
             detail="Error al recuperar la tarea"
         )
 
-@app.put("/tasks/{task_id}", response_model=TaskResponse)
-async def update_task(
-    task_id: int, 
-    updated_task: Task, 
-    current_user: dict = Depends(get_current_user)
+@app.put("/tasks/{task_id}/estado", response_model=TaskResponse)
+async def update_task_status(
+    task_id: int,
+    task_update: Task,
 ):
-    """Actualiza una tarea existente."""
+    """Actualiza el estado de una tarea específica. Solo para administradores."""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # Verificar si la tarea existe y pertenece al usuario
+            # Verificar que la tarea existe
+            cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
+            task = cursor.fetchone()
+            
+            if task is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Tarea no encontrada"
+                )
+            
+            # Actualizar el estado
+            cursor.execute(
+                "UPDATE tasks SET estado = ? WHERE id = ?",
+                (task_update.estado.value if task_update.estado else EstadoTarea.ACTIVO, task_id)
+            )
+            conn.commit()
+            
+            # Recuperar y retornar la tarea actualizada
+            cursor.execute("""
+                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
+                FROM tasks t
+                JOIN usuarios u ON t.usuario_id = u.id
+                WHERE t.id = ?
+            """, (task_id,))
+            updated_task = cursor.fetchone()
+            
+            if not updated_task:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error al recuperar la tarea actualizada"
+                )
+            
+            return TaskResponse(**dict(updated_task))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al actualizar estado de la tarea {task_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al actualizar el estado de la tarea"
+        )
+
+@app.get("/search-advanced", response_model=List[TaskResponse])
+async def search_advanced(
+  cor: Optional[List[str]] = Query(None, description="Buscar por correo"),
+  cod: Optional[List[str]] = Query(None, description="Buscar por código"),
+  id: Optional[List[Union[int, str]]] = Query(None, description="Buscar por ID"),
+  des: Optional[List[str]] = Query(None, description="Buscar por descripción"),
+  combinado: Optional[List[str]] = Query(None, description="Búsqueda combinada"),
+  limit: int = Query(100, ge=1, le=500, description="Límite de resultados"),
+  offset: int = Query(0, ge=0, description="Inicio de la paginación"),
+  current_user: dict = Depends(get_current_user)
+):
+  """Realiza una búsqueda avanzada de tareas con filtros flexibles incluyendo razón."""
+  try:
+      or_conditions = []
+      valores = []
+      
+      def procesar_campo_simple(parametros, campo_db, like=False):
+          if not parametros:
+              return None, []
+          
+          sub_conditions = []
+          sub_values = []
+          
+          for valor in parametros:
+              if not valor:
+                  continue
+                  
+              if like:
+                  sub_conditions.append(f"{campo_db} LIKE ?")
+                  sub_values.append(f"%{valor}%")
+              else:
+                  sub_conditions.append(f"{campo_db} = ?")
+                  sub_values.append(valor)
+          
+          if not sub_conditions:
+              return None, []
+              
+          return " OR ".join(sub_conditions), sub_values
+      
+      # Procesar campos simples
+      if cor:
+          cor_condition, cor_values = procesar_campo_simple(cor, "u.correo", like=True)
+          if cor_condition:
+              or_conditions.append(f"({cor_condition})")
+              valores.extend(cor_values)
+      
+      if cod:
+          cod_condition, cod_values = procesar_campo_simple(cod, "u.codigo")
+          if cod_condition:
+              or_conditions.append(f"({cod_condition})")
+              valores.extend(cod_values)
+      
+      if id:
+          id_parsed = []
+          for i in id:
+              try:
+                  id_parsed.append(int(i))
+              except (ValueError, TypeError):
+                  continue
+          
+          if id_parsed:
+              id_condition, id_values = procesar_campo_simple(id_parsed, "t.id")
+              if id_condition:
+                  or_conditions.append(f"({id_condition})")
+                  valores.extend(id_values)
+      
+      if des:
+          des_condition, des_values = procesar_campo_simple(des, "t.descripcion", like=True)
+          if des_condition:
+              or_conditions.append(f"({des_condition})")
+              valores.extend(des_values)
+
+      # Procesar combinaciones AND
+      if combinado:
+          for combo in combinado:
+              if not combo or "=" not in combo:
+                  continue
+                  
+              and_parts = combo.split(":")
+              and_conditions = []
+              and_values = []
+              
+              for part in and_parts:
+                  if "=" not in part:
+                      continue
+                  
+                  try:
+                      campo, valor = part.split("=", 1)
+                      if not campo or not valor or campo not in ["cor", "cod", "id", "des"]:
+                          continue
+                      
+                      valores_campo = valor.split(",") if valor else []
+                      
+                      if campo == "cor":
+                          cond, vals = procesar_campo_simple(valores_campo, "u.correo", like=True)
+                          if cond:
+                              and_conditions.append(f"({cond})")
+                              and_values.extend(vals)
+                      
+                      elif campo == "cod":
+                          cond, vals = procesar_campo_simple(valores_campo, "u.codigo")
+                          if cond:
+                              and_conditions.append(f"({cond})")
+                              and_values.extend(vals)
+                      
+                      elif campo == "id":
+                          id_parsed = []
+                          for i in valores_campo:
+                              try:
+                                  id_parsed.append(int(i))
+                              except (ValueError, TypeError):
+                                  continue
+                          
+                          if id_parsed:
+                              cond, vals = procesar_campo_simple(id_parsed, "t.id")
+                              if cond:
+                                  and_conditions.append(f"({cond})")
+                                  and_values.extend(vals)
+                      
+                      elif campo == "des":
+                          cond, vals = procesar_campo_simple(valores_campo, "t.descripcion", like=True)
+                          if cond:
+                              and_conditions.append(f"({cond})")
+                              and_values.extend(vals)
+
+                  except Exception as e:
+                      logger.warning(f"Error procesando parte combinada {part}: {e}")
+                      continue
+              
+              if and_conditions:
+                  or_conditions.append("(" + " AND ".join(and_conditions) + ")")
+                  valores.extend(and_values)
+      
+      # Construir la consulta SQL final
+      base_query = """
+          SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
+                 t.descripcion, t.estado, t.fecha, t.hora, t.razon
+          FROM tasks t
+          JOIN usuarios u ON t.usuario_id = u.id
+      """
+      
+      if or_conditions:
+          query = base_query + " WHERE " + " OR ".join(or_conditions)
+      else:
+          query = base_query
+          
+      query += " LIMIT ? OFFSET ?"
+      valores.extend([limit, offset])
+      
+      with get_db_connection() as conn:
+          cursor = conn.cursor()
+          try:
+              cursor.execute(query, valores)
+              rows = cursor.fetchall()
+              return [TaskResponse(**dict(row)) for row in rows]
+          except sqlite3.Error as e:
+              logger.error(f"Error en consulta SQL: {str(e)}")
+              raise HTTPException(
+                  status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                  detail=f"Error en la consulta de búsqueda: {str(e)}"
+              )
+  except Exception as e:
+      logger.error(f"Error en búsqueda avanzada: {e}")
+      raise HTTPException(
+          status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+          detail="Error al procesar la búsqueda avanzada"
+      )
+
+@app.put("/tasks/{task_id}/{razon}", response_model=TaskResponse) 
+async def update_task_razon(
+    task_id: int, 
+    razon: str, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Actualiza solo la razón de una tarea existente."""
+    try:
+        if not razon or not razon.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La razón no puede estar vacía"
+            )
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Verificar existencia y permisos
             cursor.execute("SELECT usuario_id FROM tasks WHERE id = ?", (task_id,))
             task = cursor.fetchone()
             
@@ -582,26 +805,17 @@ async def update_task(
                     detail="No tienes permiso para modificar esta tarea"
                 )
             
-            # Validación adicional
-            if not updated_task.descripcion:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="La descripción es obligatoria"
-                )
-            
-            # Actualizar la tarea
+            # Actualizar solo la razón
             cursor.execute(
-                "UPDATE tasks SET descripcion=?, estado=? WHERE id=?",
-                (updated_task.descripcion, 
-                 updated_task.estado.value if updated_task.estado else EstadoTarea.ACTIVO, 
-                 task_id)
+                "UPDATE tasks SET razon = ? WHERE id = ?",
+                (razon.strip(), task_id)
             )
             conn.commit()
             
-            # Obtener la tarea actualizada con la información del usuario
+            # Recuperar y retornar la tarea actualizada
             cursor.execute("""
                 SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
                 FROM tasks t
                 JOIN usuarios u ON t.usuario_id = u.id
                 WHERE t.id = ?
@@ -611,17 +825,18 @@ async def update_task(
             if not updated_task_from_db:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Error al actualizar la tarea"
+                    detail="Error al recuperar la tarea actualizada"
                 )
             
             return TaskResponse(**dict(updated_task_from_db))
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error al actualizar tarea {task_id}: {e}")
+        logger.error(f"Error al actualizar razón de la tarea {task_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al actualizar la tarea"
+            detail="Error al actualizar la razón de la tarea"
         )
 
 @app.delete("/tasks/{task_id}", status_code=204)
@@ -631,7 +846,6 @@ async def delete_task(task_id: int, current_user: dict = Depends(get_current_use
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # Verificar si la tarea existe y pertenece al usuario
             cursor.execute("SELECT usuario_id FROM tasks WHERE id = ?", (task_id,))
             task = cursor.fetchone()
             
@@ -661,196 +875,87 @@ async def delete_task(task_id: int, current_user: dict = Depends(get_current_use
         )
 
 #########################################
-# Endpoint para búsquedas avanzadas (mejorado)
+# NUEVOS ENDPOINTS: my-tasks/{razon}
 
-@app.get("/search-advanced", response_model=List[TaskResponse])
-async def search_advanced(
-    cor: Optional[List[str]] = Query(None, description="Buscar por correo"),
-    cod: Optional[List[str]] = Query(None, description="Buscar por código"),
-    id: Optional[List[Union[int, str]]] = Query(None, description="Buscar por ID"),
-    des: Optional[List[str]] = Query(None, description="Buscar por descripción"),
-    combinado: Optional[List[str]] = Query(None, description="Búsqueda combinada (cor=val:cod=val:id=val:des=val)"),
-    limit: int = Query(100, ge=1, le=500, description="Límite de resultados"),
-    offset: int = Query(0, ge=0, description="Inicio de la paginación"),
+@app.put("/my-tasks/{id}/{razon}", response_model=TaskResponse)
+async def update_task_with_razon(
+    id: int,
+    razon: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Realiza una búsqueda avanzada de tareas con filtros flexibles.
-    
-    Ejemplos:
-    - /search-advanced?correo=juan@email.com&cod=E001&des=Proyecto
-    - /search-advanced?combinado=correo=juan@email.com:cod=E001
-    """
+    """Actualiza una tarea existente del usuario actual añadiendo una razón de cancelación."""
     try:
-        # Lista para almacenar cada condición OR
-        or_conditions = []
-        valores = []
-        
-        # 1. Procesar cada campo simple (OR dentro del mismo campo)
-        def procesar_campo_simple(parametros, campo_db, like=False):
-            if not parametros:
-                return None, []
-            
-            sub_conditions = []
-            sub_values = []
-            
-            for valor in parametros:
-                if not valor:  # Ignorar valores vacíos
-                    continue
-                    
-                if like:
-                    sub_conditions.append(f"{campo_db} LIKE ?")
-                    sub_values.append(f"%{valor}%")
-                else:
-                    sub_conditions.append(f"{campo_db} = ?")
-                    sub_values.append(valor)
-            
-            if not sub_conditions:
-                return None, []
-                
-            return " OR ".join(sub_conditions), sub_values
-        
-        # Procesar campos simples
-        if cor:
-            cor_condition, cor_values = procesar_campo_simple(cor, "u.correo", like=True)
-            if cor_condition:
-                or_conditions.append(f"({cor_condition})")
-                valores.extend(cor_values)
-        
-        if cod:
-            cod_condition, cod_values = procesar_campo_simple(cod, "u.codigo")
-            if cod_condition:
-                or_conditions.append(f"({cod_condition})")
-                valores.extend(cod_values)
-        
-        if id:
-            # Convertir id a enteros si son strings
-            id_parsed = []
-            for i in id:
-                try:
-                    id_parsed.append(int(i))
-                except (ValueError, TypeError):
-                    continue
-            
-            if id_parsed:  # Solo procesar si hay IDs válidos
-                id_condition, id_values = procesar_campo_simple(id_parsed, "t.id")
-                if id_condition:
-                    or_conditions.append(f"({id_condition})")
-                    valores.extend(id_values)
-        
-        if des:
-            des_condition, des_values = procesar_campo_simple(des, "t.descripcion", like=True)
-            if des_condition:
-                or_conditions.append(f"({des_condition})")
-                valores.extend(des_values)
-        
-        # 2. Procesar combinaciones AND
-        if combinado:
-            for combo in combinado:
-                if not combo or "=" not in combo:  # Validar formato
-                    continue
-                    
-                and_parts = combo.split(":")
-                and_conditions = []
-                and_values = []
-                
-                for part in and_parts:
-                    if "=" not in part:
-                        continue
-                    
-                    try:
-                        campo, valor = part.split("=", 1)
-                        if not campo or not valor or campo not in ["cor", "cod", "id", "des"]:
-                            continue
-                        
-                        # Manejar múltiples valores separados por coma dentro de un campo
-                        valores_campo = valor.split(",") if valor else []
-                        
-                        if campo == "cor":
-                            cond, vals = procesar_campo_simple(valores_campo, "u.correo", like=True)
-                            if cond:
-                                and_conditions.append(f"({cond})")
-                                and_values.extend(vals)
-                        
-                        elif campo == "cod":
-                            cond, vals = procesar_campo_simple(valores_campo, "u.codigo")
-                            if cond:
-                                and_conditions.append(f"({cond})")
-                                and_values.extend(vals)
-                        
-                        elif campo == "id":
-                            # Convertir a enteros
-                            id_parsed = []
-                            for i in valores_campo:
-                                try:
-                                    id_parsed.append(int(i))
-                                except (ValueError, TypeError):
-                                    continue
-                            
-                            if id_parsed:  # Solo procesar si hay IDs válidos
-                                cond, vals = procesar_campo_simple(id_parsed, "t.id")
-                                if cond:
-                                    and_conditions.append(f"({cond})")
-                                    and_values.extend(vals)
-                        
-                        elif campo == "des":
-                            cond, vals = procesar_campo_simple(valores_campo, "t.descripcion", like=True)
-                            if cond:
-                                and_conditions.append(f"({cond})")
-                                and_values.extend(vals)
-                    except Exception as e:
-                        logger.warning(f"Error procesando parte combinada {part}: {e}")
-                        continue
-                
-                if and_conditions:
-                    or_conditions.append("(" + " AND ".join(and_conditions) + ")")
-                    valores.extend(and_values)
-        
-        # Construir la consulta SQL final
-        base_query = """
-            SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                   t.descripcion, t.estado, t.fecha, t.hora
-            FROM tasks t
-            JOIN usuarios u ON t.usuario_id = u.id
-        """
-        
-        if or_conditions:
-            query = base_query + " WHERE " + " OR ".join(or_conditions)
-        else:
-            query = base_query
-            
-        # Añadir paginación
-        query += " LIMIT ? OFFSET ?"
-        valores.extend([limit, offset])
-        
-        # Ejecutar consulta
+        if not razon or not razon.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La razón no puede estar vacía"
+            )
+
+        usuario_id = current_user["id"]
+
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            try:
-                cursor.execute(query, valores)
-                rows = cursor.fetchall()
-                return [TaskResponse(**dict(row)) for row in rows]
-            except sqlite3.Error as e:
-                logger.error(f"Error en consulta SQL: {str(e)}")
+
+            # Verificar que la tarea exista y pertenezca al usuario
+            cursor.execute(
+                "SELECT id, estado FROM tasks WHERE id = ? AND usuario_id = ?",
+                (id, usuario_id)
+            )
+            existing_task = cursor.fetchone()
+
+            if not existing_task:
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-                    detail=f"Error en la consulta de búsqueda: {str(e)}"
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No se encontró la tarea para el usuario actual con ese id"
                 )
+
+            # Primero cambiar el estado a "Cancelado"
+            cursor.execute(
+                "UPDATE tasks SET estado = ? WHERE id = ? AND usuario_id = ?",
+                ("Cancelado", id, usuario_id)
+            )
+
+            # Luego actualizar la razón de la tarea
+            cursor.execute(
+                "UPDATE tasks SET razon = ? WHERE id = ? AND usuario_id = ?",
+                (razon.strip(), id, usuario_id)
+            )
+            conn.commit()
+
+            # Recuperar la tarea actualizada
+            cursor.execute("""
+                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante,
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
+                FROM tasks t
+                JOIN usuarios u ON t.usuario_id = u.id
+                WHERE t.id = ? AND t.usuario_id = ?
+            """, (id, usuario_id))
+            updated_task = cursor.fetchone()
+
+            if not updated_task:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error al recuperar la tarea actualizada"
+                )
+
+            return TaskResponse(**dict(updated_task))
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error en búsqueda avanzada: {e}")
+        logger.error(f"Error al actualizar la razón de la tarea: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al procesar la búsqueda avanzada"
+            detail="Error al actualizar la razón de la tarea"
         )
 
 #########################################
-# Endpoint para tareas del usuario actual
+# Endpoints existentes actualizados
 
 @app.post("/my-tasks/", response_model=TaskResponse, status_code=201)
 async def create_my_task(task: Task, current_user: dict = Depends(get_current_user)):
     """Crea una nueva tarea para el usuario actual."""
     try:
-        # Validaciones adicionales
         if not task.descripcion:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -858,23 +963,20 @@ async def create_my_task(task: Task, current_user: dict = Depends(get_current_us
             )
         
         fecha, hora = get_current_local_date_time()
-        
-        # Usar el ID del usuario autenticado (no permitir especificar usuario_id)
         usuario_id = current_user["id"]
         
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO tasks (usuario_id, descripcion, estado, fecha, hora) VALUES (?, ?, ?, ?, ?)",
-                (usuario_id, task.descripcion, task.estado.value if task.estado else EstadoTarea.ACTIVO, fecha, hora)
+                "INSERT INTO tasks (usuario_id, descripcion, estado, fecha, hora, razon) VALUES (?, ?, ?, ?, ?, ?)",
+                (usuario_id, task.descripcion, task.estado.value if task.estado else EstadoTarea.ACTIVO, fecha, hora, task.razon)
             )
             conn.commit()
             task_id = cursor.lastrowid
             
-            # Obtener la tarea creada con la información del usuario
             cursor.execute("""
                 SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
                 FROM tasks t
                 JOIN usuarios u ON t.usuario_id = u.id
                 WHERE t.id = ? AND t.usuario_id = ?
@@ -905,7 +1007,7 @@ async def read_my_task(task_id: int, current_user: dict = Depends(get_current_us
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
                 FROM tasks t
                 JOIN usuarios u ON t.usuario_id = u.id
                 WHERE t.id = ? AND t.usuario_id = ?
@@ -930,18 +1032,19 @@ async def read_my_task(task_id: int, current_user: dict = Depends(get_current_us
 @app.get("/my-tasks/", response_model=List[TaskResponse])
 async def read_my_tasks(
     estado: Optional[EstadoTarea] = None,
+    razon: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user)
 ):
-    """Obtiene las tareas del usuario actual con filtro opcional por estado."""
+    """Obtiene las tareas del usuario actual con filtros opcionales."""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
             query = """
                 SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
                 FROM tasks t
                 JOIN usuarios u ON t.usuario_id = u.id
                 WHERE t.usuario_id = ?
@@ -951,6 +1054,10 @@ async def read_my_tasks(
             if estado:
                 query += " AND t.estado = ?"
                 params.append(estado.value)
+            
+            if razon:
+                query += " AND t.razon = ?"
+                params.append(razon.strip())
                 
             query += " ORDER BY t.fecha DESC, t.hora DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])
@@ -964,70 +1071,191 @@ async def read_my_tasks(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al recuperar las tareas del usuario"
         )
-    
-@app.put("/my-tasks/{task_id}", response_model=TaskResponse)
-async def update_my_task(
-    task_id: int, 
-    updated_task: Task, 
+
+#########################################
+# NUEVOS ENDPOINTS DE FORMULARIOS (sin archivos)
+
+class FormularioRequest(BaseModel):
+    nombres: str
+    apellido_paterno: str
+    apellido_materno: str
+    codigo_udg: str
+    fecha_nacimiento: str
+    descripcion_detallada: str
+
+@app.post("/my-tasks/{task_id}/formulario", response_model=FormularioResponse, status_code=201)
+async def create_formulario(
+    task_id: int,
+    formulario: FormularioRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Actualiza una tarea específica del usuario actual."""
+    """Crea un formulario detallado para una tarea específica del usuario actual."""
+    try:
+        # Verificar que la tarea existe y pertenece al usuario
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM tasks WHERE id = ? AND usuario_id = ?",
+                (task_id, current_user["id"])
+            )
+            task = cursor.fetchone()
+            
+            if not task:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Tarea no encontrada o no tienes permiso para acceder a ella"
+                )
+            
+            # Verificar si ya existe un formulario para esta tarea
+            cursor.execute("SELECT id FROM formularios WHERE task_id = ?", (task_id,))
+            existing_form = cursor.fetchone()
+            
+            if existing_form:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Ya existe un formulario para esta tarea"
+                )
+            
+            # Obtener fecha y hora actuales
+            fecha, hora = get_current_local_date_time()
+            
+            # Crear el formulario (sin archivos)
+            cursor.execute("""
+                INSERT INTO formularios 
+                (task_id, nombres, apellido_paterno, apellido_materno, codigo_udg, 
+                 fecha_nacimiento, descripcion_detallada, fecha_creacion, hora_creacion)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                task_id, formulario.nombres.strip(), formulario.apellido_paterno.strip(), formulario.apellido_materno.strip(),
+                formulario.codigo_udg.strip(), formulario.fecha_nacimiento, formulario.descripcion_detallada.strip(),
+                fecha, hora
+            ))
+            conn.commit()
+            formulario_id = cursor.lastrowid
+            
+            # Recuperar el formulario creado
+            cursor.execute("""
+                SELECT id, task_id, nombres, apellido_paterno, apellido_materno, codigo_udg,
+                       fecha_nacimiento, descripcion_detallada, fecha_creacion, hora_creacion
+                FROM formularios WHERE id = ?
+            """, (formulario_id,))
+            new_form = cursor.fetchone()
+            
+            if not new_form:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error al crear el formulario"
+                )
+            
+            return FormularioResponse(**dict(new_form))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al crear formulario para tarea {task_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al crear el formulario"
+        )
+
+@app.get("/my-tasks/{task_id}/formulario", response_model=FormularioResponse)
+async def get_my_formulario(
+    task_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Obtiene el formulario de una tarea específica del usuario actual."""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # Verificar si la tarea existe y pertenece al usuario actual
-            cursor.execute("SELECT usuario_id FROM tasks WHERE id = ? AND usuario_id = ?", 
-                          (task_id, current_user["id"]))
+            # Verificar que la tarea existe y pertenece al usuario
+            cursor.execute(
+                "SELECT id FROM tasks WHERE id = ? AND usuario_id = ?",
+                (task_id, current_user["id"])
+            )
             task = cursor.fetchone()
             
-            if task is None:
+            if not task:
                 raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail="Tarea no encontrada o no tienes permiso para modificarla"
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Tarea no encontrada o no tienes permiso para acceder a ella"
                 )
             
-            # Validación adicional
-            if not updated_task.descripcion:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="La descripción es obligatoria"
-                )
-            
-            # Actualizar la tarea
-            cursor.execute(
-                "UPDATE tasks SET descripcion=?, estado=? WHERE id=? AND usuario_id=?",
-                (updated_task.descripcion, 
-                 updated_task.estado.value if updated_task.estado else EstadoTarea.ACTIVO, 
-                 task_id,
-                 current_user["id"])
-            )
-            conn.commit()
-            
-            # Obtener la tarea actualizada con la información del usuario
+            # Obtener el formulario
             cursor.execute("""
-                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora
-                FROM tasks t
-                JOIN usuarios u ON t.usuario_id = u.id
-                WHERE t.id = ? AND t.usuario_id = ?
-            """, (task_id, current_user["id"]))
-            updated_task_from_db = cursor.fetchone()
+                SELECT id, task_id, nombres, apellido_paterno, apellido_materno, codigo_udg,
+                       fecha_nacimiento, descripcion_detallada, fecha_creacion, hora_creacion
+                FROM formularios WHERE task_id = ?
+            """, (task_id,))
+            formulario = cursor.fetchone()
             
-            if not updated_task_from_db:
+            if not formulario:
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Error al actualizar la tarea"
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No se encontró formulario para esta tarea"
                 )
             
-            return TaskResponse(**dict(updated_task_from_db))
+            return FormularioResponse(**dict(formulario))
+            
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error al actualizar tarea propia {task_id}: {e}")
+        logger.error(f"Error al obtener formulario de tarea {task_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al actualizar la tarea"
+            detail="Error al recuperar el formulario"
+        )
+
+@app.get("/tasks/{task_id}/formulario", response_model=FormularioResponse)
+async def get_formulario(
+    task_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Obtiene el formulario de cualquier tarea (para administradores o propietarios)."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Verificar que la tarea existe
+            cursor.execute("SELECT usuario_id FROM tasks WHERE id = ?", (task_id,))
+            task = cursor.fetchone()
+            
+            if not task:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Tarea no encontrada"
+                )
+            
+            # Verificar permisos (propietario o admin)
+            if task["usuario_id"] != current_user["id"] and current_user.get("rol") != "admin":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No tienes permiso para acceder a este formulario"
+                )
+            
+            # Obtener el formulario
+            cursor.execute("""
+                SELECT id, task_id, nombres, apellido_paterno, apellido_materno, codigo_udg,
+                       fecha_nacimiento, descripcion_detallada, fecha_creacion, hora_creacion
+                FROM formularios WHERE task_id = ?
+            """, (task_id,))
+            formulario = cursor.fetchone()
+            
+            if not formulario:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No se encontró formulario para esta tarea"
+                )
+            
+            return FormularioResponse(**dict(formulario))
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al obtener formulario de tarea {task_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al recuperar el formulario"
         )
 
 #########################################
@@ -1049,7 +1277,6 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 async def health_check():
     """Verifica el estado del sistema."""
     try:
-        # Verificar conexión a la base de datos
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
@@ -1067,6 +1294,3 @@ async def health_check():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat()
         }
-#8====D---- isaac
-#{|}jose miguel
-#(.)(.)saul
