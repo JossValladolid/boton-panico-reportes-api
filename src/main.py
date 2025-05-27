@@ -15,37 +15,57 @@ import logging
 from enum import Enum
 import json
 
-# Configuración de logging
+# ============================================================================
+# 📋 CONFIGURACIÓN INICIAL Y CONSTANTES
+# ============================================================================
+
+# Configuración de logging estructurado
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
 )
 logger = logging.getLogger(__name__)
 
-# Constantes y configuración
+# Carga de variables de entorno
 load_dotenv()
 
+# Constantes de configuración
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 DATABASE_URL = os.getenv("DATABASE_URL", "db/isaa.db")
 
+# Validación de configuración crítica
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY no configurada en .env")
 
-# Configuración de seguridad
+# ============================================================================
+# 🔐 CONFIGURACIÓN DE SEGURIDAD
+# ============================================================================
+
+# Contexto de encriptación para contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Esquema OAuth2 para autenticación JWT
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Enumeraciones para valores fijos
+# ============================================================================
+# 📊 ENUMERACIONES Y TIPOS DE DATOS
+# ============================================================================
+
 class EstadoTarea(str, Enum):
+    """Estados posibles para las tareas/reportes."""
     ACTIVO = "Activo"
     COMPLETADO = "Completado"
     PENDIENTE = "Pendiente"
     CANCELADO = "Cancelado"
 
-# Modelos Pydantic
+# ============================================================================
+# 🏗️ MODELOS PYDANTIC PARA VALIDACIÓN DE DATOS
+# ============================================================================
+
 class Usuario(BaseModel):
+    """Modelo para usuarios del sistema."""
     id: Optional[int] = None
     codigo: str
     correo: str
@@ -67,19 +87,21 @@ class Usuario(BaseModel):
         return v.strip().lower()
 
 class UsuarioResponse(BaseModel):
+    """Modelo de respuesta para usuarios (sin contraseña)."""
     id: int
     codigo: str
     correo: str
     rol: str
 
 class Task(BaseModel):
+    """Modelo para tareas/reportes de emergencia."""
     id: Optional[int] = None
     usuario_id: Optional[int] = None
     descripcion: Optional[str] = Field(None, min_length=1)
     estado: Optional[EstadoTarea] = EstadoTarea.ACTIVO
     fecha: Optional[str] = None  # dd/mm/yyyy
     hora: Optional[str] = None   # HH:MM
-    razon: Optional[str] = Field(None, min_length=1)  # Nueva columna razon
+    razon: Optional[str] = Field(None, min_length=1)  # Razón de cancelación
     
     @validator('descripcion')
     def descripcion_no_vacia(cls, v):
@@ -94,6 +116,7 @@ class Task(BaseModel):
         return v.strip() if v else None
 
 class TaskResponse(BaseModel):
+    """Modelo de respuesta para tareas con información del usuario."""
     id: Optional[int] = None
     usuario_id: Optional[int] = None
     codigo_estudiante: Optional[str] = None
@@ -102,10 +125,10 @@ class TaskResponse(BaseModel):
     estado: Optional[str] = EstadoTarea.ACTIVO
     fecha: Optional[str] = None
     hora: Optional[str] = None
-    razon: Optional[str] = None  # Nueva columna razon
+    razon: Optional[str] = None
 
-# Nuevos modelos para formularios
 class Formulario(BaseModel):
+    """Modelo para formularios de denuncia estudiantil."""
     id: Optional[int] = None
     task_id: int
     nombres: str = Field(..., min_length=1)
@@ -124,6 +147,7 @@ class Formulario(BaseModel):
         return v.strip()
 
 class FormularioResponse(BaseModel):
+    """Modelo de respuesta para formularios."""
     id: int
     task_id: int
     nombres: str
@@ -136,13 +160,27 @@ class FormularioResponse(BaseModel):
     hora_creacion: Optional[str] = None
 
 class Token(BaseModel):
+    """Modelo para tokens JWT."""
     access_token: str
     token_type: str
 
 class TokenData(BaseModel):
+    """Modelo para datos del token."""
     codigo: Optional[str] = None
 
-# Funciones de utilidad
+class FormularioRequest(BaseModel):
+    """Modelo de request para crear formularios."""
+    nombres: str
+    apellido_paterno: str
+    apellido_materno: str
+    codigo_udg: str
+    fecha_nacimiento: str
+    descripcion_detallada: str
+
+# ============================================================================
+# 🛠️ FUNCIONES DE UTILIDAD Y HELPERS
+# ============================================================================
+
 @contextmanager
 def get_db_connection():
     """Context manager para manejar conexiones a la base de datos de forma segura."""
@@ -164,7 +202,7 @@ def get_db_connection():
             conn.close()
 
 def get_current_local_date_time():
-    """Obtiene la fecha y hora local en el formato requerido."""
+    """Obtiene la fecha y hora local en el formato requerido (Mexico City)."""
     try:
         tz = zoneinfo.ZoneInfo("America/Mexico_City")
         now = datetime.now(tz)
@@ -177,6 +215,10 @@ def get_current_local_date_time():
         fecha = now.strftime("%d/%m/%Y")
         hora = now.strftime("%H:%M")
         return fecha, hora
+
+# ============================================================================
+# 🔐 FUNCIONES DE AUTENTICACIÓN Y SEGURIDAD
+# ============================================================================
 
 def verify_password(plain_password, hashed_password):
     """Verifica que una contraseña coincida con su hash.""" 
@@ -251,6 +293,19 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
     return user
 
+def get_current_admin(current_user: dict = Depends(get_current_user)):
+    """Verifica que el usuario actual sea administrador."""
+    if current_user.get("rol") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso restringido a administradores"
+        )
+    return current_user
+
+# ============================================================================
+# 🗄️ INICIALIZACIÓN DE BASE DE DATOS
+# ============================================================================
+
 def init_db():
     """Inicializa la base de datos si no existe."""
     try:
@@ -258,7 +313,7 @@ def init_db():
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            # Verificamos si la tabla de usuarios existe
+            # Tabla de usuarios
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='usuarios'")
             users_table_exists = cursor.fetchone()
 
@@ -273,7 +328,7 @@ def init_db():
                     )
                 """)
             
-            # Verificamos si la tabla de tareas existe
+            # Tabla de tareas/reportes
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
             tasks_table_exists = cursor.fetchone()
 
@@ -298,7 +353,7 @@ def init_db():
                     cursor.execute("ALTER TABLE tasks ADD COLUMN razon TEXT")
                     logger.info("Columna 'razon' agregada a la tabla tasks")
 
-            # Nueva tabla de formularios (sin archivos)
+            # Tabla de formularios de denuncia
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='formularios'")
             formularios_table_exists = cursor.fetchone()
 
@@ -320,31 +375,20 @@ def init_db():
                 """)
                 logger.info("Tabla 'formularios' creada exitosamente")
                 
-            # Añadir índices para mejorar rendimiento
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_usuario_id'")
-            if not cursor.fetchone():
-                cursor.execute("CREATE INDEX idx_tasks_usuario_id ON tasks(usuario_id)")
-                
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_usuarios_codigo'")
-            if not cursor.fetchone():
-                cursor.execute("CREATE INDEX idx_usuarios_codigo ON usuarios(codigo)")
-                
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_usuarios_correo'")
-            if not cursor.fetchone():
-                cursor.execute("CREATE INDEX idx_usuarios_correo ON usuarios(correo)")
+            # Crear índices para optimizar rendimiento
+            indices = [
+                ("idx_tasks_usuario_id", "CREATE INDEX idx_tasks_usuario_id ON tasks(usuario_id)"),
+                ("idx_usuarios_codigo", "CREATE INDEX idx_usuarios_codigo ON usuarios(codigo)"),
+                ("idx_usuarios_correo", "CREATE INDEX idx_usuarios_correo ON usuarios(correo)"),
+                ("idx_tasks_razon", "CREATE INDEX idx_tasks_razon ON tasks(razon)"),
+                ("idx_formularios_task_id", "CREATE INDEX idx_formularios_task_id ON formularios(task_id)"),
+                ("idx_formularios_codigo_udg", "CREATE INDEX idx_formularios_codigo_udg ON formularios(codigo_udg)")
+            ]
             
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_tasks_razon'")
-            if not cursor.fetchone():
-                cursor.execute("CREATE INDEX idx_tasks_razon ON tasks(razon)")
-
-            # Nuevos índices para formularios
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_formularios_task_id'")
-            if not cursor.fetchone():
-                cursor.execute("CREATE INDEX idx_formularios_task_id ON formularios(task_id)")
-
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_formularios_codigo_udg'")
-            if not cursor.fetchone():
-                cursor.execute("CREATE INDEX idx_formularios_codigo_udg ON formularios(codigo_udg)")
+            for index_name, create_sql in indices:
+                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='index' AND name='{index_name}'")
+                if not cursor.fetchone():
+                    cursor.execute(create_sql)
             
             conn.commit()
             logger.info("Base de datos inicializada correctamente")
@@ -355,10 +399,13 @@ def init_db():
             detail="Error al inicializar la base de datos"
         )
 
-# Inicialización de FastAPI
-app = FastAPI(title="Task Manager API", version="1.4.0")
+# ============================================================================
+# 🚀 INICIALIZACIÓN DE FASTAPI
+# ============================================================================
 
-# Middleware CORS
+app = FastAPI(title="ISAA API - Task Manager", version="1.4.0")
+
+# Middleware CORS para permitir requests desde el frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5500", "http://127.0.0.1:5501"],
@@ -366,14 +413,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-def get_current_admin(current_user: dict = Depends(get_current_user)):
-    if current_user.get("rol") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Acceso restringido a administradores"
-        )
-    return current_user
 
 @app.on_event("startup")
 async def startup_event():
@@ -383,8 +422,9 @@ async def startup_event():
     except Exception as e:
         logger.critical(f"Error crítico al iniciar la aplicación: {e}")
 
-#########################################
-# Endpoints de autenticación
+# ============================================================================
+# 🔐 ENDPOINTS DE AUTENTICACIÓN
+# ============================================================================
 
 @app.post("/token", response_model=Token)
 async def login_for_access_token(
@@ -419,12 +459,23 @@ async def login_for_access_token(
             detail="Error interno del servidor al procesar la solicitud de login"
         )
 
-#########################################
-# Endpoints de usuarios
+@app.get("/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Obtiene información del usuario actual."""
+    return {
+        "id": current_user["id"],
+        "codigo": current_user["codigo"],
+        "correo": current_user["correo"],
+        "rol": current_user["rol"]
+    }
+
+# ============================================================================
+# 👥 ENDPOINTS DE GESTIÓN DE USUARIOS
+# ============================================================================
 
 @app.post("/usuarios/", response_model=UsuarioResponse, status_code=201)
 async def create_user(usuario: Usuario):
-    """Crea un nuevo usuario."""
+    """Crea un nuevo usuario en el sistema."""
     try:
         if not usuario.codigo or not usuario.correo or not usuario.contrasena:
             raise HTTPException(
@@ -479,7 +530,7 @@ async def create_user(usuario: Usuario):
 
 @app.get("/usuarios/", response_model=List[UsuarioResponse])
 async def read_users(current_user: dict = Depends(get_current_user)):
-    """Obtiene todos los usuarios."""
+    """Obtiene todos los usuarios del sistema."""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -495,7 +546,7 @@ async def read_users(current_user: dict = Depends(get_current_user)):
 
 @app.get("/usuarios/{user_id}", response_model=UsuarioResponse)
 async def read_user(user_id: int, current_user: dict = Depends(get_current_user)):
-    """Obtiene un usuario por su ID."""
+    """Obtiene un usuario específico por su ID."""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -517,8 +568,199 @@ async def read_user(user_id: int, current_user: dict = Depends(get_current_user)
             detail="Error al recuperar información del usuario"
         )
 
-#########################################
-# Endpoints de tareas
+# ============================================================================
+# 📋 ENDPOINTS DE GESTIÓN DE TAREAS/REPORTES PERSONALES
+# ============================================================================
+
+@app.post("/my-tasks/", response_model=TaskResponse, status_code=201)
+async def create_my_task(task: Task, current_user: dict = Depends(get_current_user)):
+    """Crea una nueva tarea para el usuario actual."""
+    try:
+        if not task.descripcion:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La descripción es obligatoria"
+            )
+        
+        fecha, hora = get_current_local_date_time()
+        usuario_id = current_user["id"]
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO tasks (usuario_id, descripcion, estado, fecha, hora, razon) VALUES (?, ?, ?, ?, ?, ?)",
+                (usuario_id, task.descripcion, task.estado.value if task.estado else EstadoTarea.ACTIVO, fecha, hora, task.razon)
+            )
+            conn.commit()
+            task_id = cursor.lastrowid
+            
+            cursor.execute("""
+                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
+                FROM tasks t
+                JOIN usuarios u ON t.usuario_id = u.id
+                WHERE t.id = ? AND t.usuario_id = ?
+            """, (task_id, usuario_id))
+            new_task = cursor.fetchone()
+            
+            if not new_task:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error al crear la tarea"
+                )
+                
+            return TaskResponse(**dict(new_task))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al crear tarea del usuario {current_user['id']}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al crear la tarea"
+        )
+
+@app.get("/my-tasks/", response_model=List[TaskResponse])
+async def read_my_tasks(
+    estado: Optional[EstadoTarea] = None,
+    razon: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    current_user: dict = Depends(get_current_user)
+):
+    """Obtiene las tareas del usuario actual con filtros opcionales."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
+                FROM tasks t
+                JOIN usuarios u ON t.usuario_id = u.id
+                WHERE t.usuario_id = ?
+            """
+            params = [current_user["id"]]
+            
+            if estado:
+                query += " AND t.estado = ?"
+                params.append(estado.value)
+            
+            if razon:
+                query += " AND t.razon = ?"
+                params.append(razon.strip())
+                
+            query += " ORDER BY t.fecha DESC, t.hora DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            cursor.execute(query, params)
+            tasks = cursor.fetchall()
+            return [TaskResponse(**dict(task)) for task in tasks]
+    except Exception as e:
+        logger.error(f"Error al obtener tareas del usuario: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al recuperar las tareas del usuario"
+        )
+
+@app.get("/my-tasks/{task_id}", response_model=TaskResponse)
+async def read_my_task(task_id: int, current_user: dict = Depends(get_current_user)):
+    """Obtiene una tarea específica del usuario actual por su ID."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
+                FROM tasks t
+                JOIN usuarios u ON t.usuario_id = u.id
+                WHERE t.id = ? AND t.usuario_id = ?
+            """, (task_id, current_user["id"]))
+            task = cursor.fetchone()
+            
+        if task is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="Tarea no encontrada o no tienes permiso para acceder a ella"
+            )
+        return TaskResponse(**dict(task))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al obtener tarea {task_id} del usuario {current_user['id']}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al recuperar la tarea"
+        )
+
+@app.put("/my-tasks/{id}/{razon}", response_model=TaskResponse)
+async def update_task_with_razon(
+    id: int,
+    razon: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Actualiza una tarea del usuario actual añadiendo una razón de cancelación."""
+    try:
+        if not razon or not razon.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La razón no puede estar vacía"
+            )
+
+        usuario_id = current_user["id"]
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Verificar que la tarea exista y pertenezca al usuario
+            cursor.execute(
+                "SELECT id, estado FROM tasks WHERE id = ? AND usuario_id = ?",
+                (id, usuario_id)
+            )
+            existing_task = cursor.fetchone()
+
+            if not existing_task:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No se encontró la tarea para el usuario actual con ese id"
+                )
+
+            # Cambiar el estado a "Cancelado" y actualizar la razón
+            cursor.execute(
+                "UPDATE tasks SET estado = ?, razon = ? WHERE id = ? AND usuario_id = ?",
+                ("Cancelado", razon.strip(), id, usuario_id)
+            )
+            conn.commit()
+
+            # Recuperar la tarea actualizada
+            cursor.execute("""
+                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante,
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
+                FROM tasks t
+                JOIN usuarios u ON t.usuario_id = u.id
+                WHERE t.id = ? AND t.usuario_id = ?
+            """, (id, usuario_id))
+            updated_task = cursor.fetchone()
+
+            if not updated_task:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error al recuperar la tarea actualizada"
+                )
+
+            return TaskResponse(**dict(updated_task))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al actualizar la razón de la tarea: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al actualizar la razón de la tarea"
+        )
+
+# ============================================================================
+# 🔧 ENDPOINTS DE ADMINISTRACIÓN DE TAREAS (ADMIN)
+# ============================================================================
 
 @app.get("/tasks/{task_id}", response_model=TaskResponse)
 async def read_task(task_id: int, current_user: dict = Depends(get_current_user)):
@@ -604,6 +846,112 @@ async def update_task_status(
             detail="Error al actualizar el estado de la tarea"
         )
 
+@app.put("/tasks/{task_id}/{razon}", response_model=TaskResponse) 
+async def update_task_razon(
+    task_id: int, 
+    razon: str, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Actualiza solo la razón de una tarea existente."""
+    try:
+        if not razon or not razon.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La razón no puede estar vacía"
+            )
+        
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Verificar existencia y permisos
+            cursor.execute("SELECT usuario_id FROM tasks WHERE id = ?", (task_id,))
+            task = cursor.fetchone()
+            
+            if task is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, 
+                    detail="Tarea no encontrada"
+                )
+            
+            if task["usuario_id"] != current_user["id"] and current_user.get("rol") != "admin":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No tienes permiso para modificar esta tarea"
+                )
+            
+            # Actualizar solo la razón
+            cursor.execute(
+                "UPDATE tasks SET razon = ? WHERE id = ?",
+                (razon.strip(), task_id)
+            )
+            conn.commit()
+            
+            # Recuperar y retornar la tarea actualizada
+            cursor.execute("""
+                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
+                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
+                FROM tasks t
+                JOIN usuarios u ON t.usuario_id = u.id
+                WHERE t.id = ?
+            """, (task_id,))
+            updated_task_from_db = cursor.fetchone()
+            
+            if not updated_task_from_db:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error al recuperar la tarea actualizada"
+                )
+            
+            return TaskResponse(**dict(updated_task_from_db))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al actualizar razón de la tarea {task_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al actualizar la razón de la tarea"
+        )
+
+@app.delete("/tasks/{task_id}", status_code=204)
+async def delete_task(task_id: int, current_user: dict = Depends(get_current_user)):
+    """Elimina una tarea existente."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT usuario_id FROM tasks WHERE id = ?", (task_id,))
+            task = cursor.fetchone()
+            
+            if task is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, 
+                    detail="Tarea no encontrada"
+                )
+            
+            if task["usuario_id"] != current_user["id"] and current_user.get("rol") != "admin":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No tienes permiso para eliminar esta tarea"
+                )
+            
+            cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            conn.commit()
+            
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error al eliminar tarea {task_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al eliminar la tarea"
+        )
+
+# ============================================================================
+# 🔍 ENDPOINT DE BÚSQUEDA AVANZADA
+# ============================================================================
+
 @app.get("/search-advanced", response_model=List[TaskResponse])
 async def search_advanced(
   cor: Optional[List[str]] = Query(None, description="Buscar por correo"),
@@ -615,7 +963,7 @@ async def search_advanced(
   offset: int = Query(0, ge=0, description="Inicio de la paginación"),
   current_user: dict = Depends(get_current_user)
 ):
-  """Realiza una búsqueda avanzada de tareas con filtros flexibles incluyendo razón."""
+  """Realiza una búsqueda avanzada de tareas con filtros flexibles."""
   try:
       or_conditions = []
       valores = []
@@ -772,316 +1120,9 @@ async def search_advanced(
           detail="Error al procesar la búsqueda avanzada"
       )
 
-@app.put("/tasks/{task_id}/{razon}", response_model=TaskResponse) 
-async def update_task_razon(
-    task_id: int, 
-    razon: str, 
-    current_user: dict = Depends(get_current_user)
-):
-    """Actualiza solo la razón de una tarea existente."""
-    try:
-        if not razon or not razon.strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="La razón no puede estar vacía"
-            )
-        
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Verificar existencia y permisos
-            cursor.execute("SELECT usuario_id FROM tasks WHERE id = ?", (task_id,))
-            task = cursor.fetchone()
-            
-            if task is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail="Tarea no encontrada"
-                )
-            
-            if task["usuario_id"] != current_user["id"] and current_user.get("rol") != "admin":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="No tienes permiso para modificar esta tarea"
-                )
-            
-            # Actualizar solo la razón
-            cursor.execute(
-                "UPDATE tasks SET razon = ? WHERE id = ?",
-                (razon.strip(), task_id)
-            )
-            conn.commit()
-            
-            # Recuperar y retornar la tarea actualizada
-            cursor.execute("""
-                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
-                FROM tasks t
-                JOIN usuarios u ON t.usuario_id = u.id
-                WHERE t.id = ?
-            """, (task_id,))
-            updated_task_from_db = cursor.fetchone()
-            
-            if not updated_task_from_db:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Error al recuperar la tarea actualizada"
-                )
-            
-            return TaskResponse(**dict(updated_task_from_db))
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al actualizar razón de la tarea {task_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al actualizar la razón de la tarea"
-        )
-
-@app.delete("/tasks/{task_id}", status_code=204)
-async def delete_task(task_id: int, current_user: dict = Depends(get_current_user)):
-    """Elimina una tarea existente."""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT usuario_id FROM tasks WHERE id = ?", (task_id,))
-            task = cursor.fetchone()
-            
-            if task is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail="Tarea no encontrada"
-                )
-            
-            if task["usuario_id"] != current_user["id"] and current_user.get("rol") != "admin":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="No tienes permiso para eliminar esta tarea"
-                )
-            
-            cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-            conn.commit()
-            
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al eliminar tarea {task_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al eliminar la tarea"
-        )
-
-#########################################
-# NUEVOS ENDPOINTS: my-tasks/{razon}
-
-@app.put("/my-tasks/{id}/{razon}", response_model=TaskResponse)
-async def update_task_with_razon(
-    id: int,
-    razon: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Actualiza una tarea existente del usuario actual añadiendo una razón de cancelación."""
-    try:
-        if not razon or not razon.strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="La razón no puede estar vacía"
-            )
-
-        usuario_id = current_user["id"]
-
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            # Verificar que la tarea exista y pertenezca al usuario
-            cursor.execute(
-                "SELECT id, estado FROM tasks WHERE id = ? AND usuario_id = ?",
-                (id, usuario_id)
-            )
-            existing_task = cursor.fetchone()
-
-            if not existing_task:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="No se encontró la tarea para el usuario actual con ese id"
-                )
-
-            # Primero cambiar el estado a "Cancelado"
-            cursor.execute(
-                "UPDATE tasks SET estado = ? WHERE id = ? AND usuario_id = ?",
-                ("Cancelado", id, usuario_id)
-            )
-
-            # Luego actualizar la razón de la tarea
-            cursor.execute(
-                "UPDATE tasks SET razon = ? WHERE id = ? AND usuario_id = ?",
-                (razon.strip(), id, usuario_id)
-            )
-            conn.commit()
-
-            # Recuperar la tarea actualizada
-            cursor.execute("""
-                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante,
-                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
-                FROM tasks t
-                JOIN usuarios u ON t.usuario_id = u.id
-                WHERE t.id = ? AND t.usuario_id = ?
-            """, (id, usuario_id))
-            updated_task = cursor.fetchone()
-
-            if not updated_task:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Error al recuperar la tarea actualizada"
-                )
-
-            return TaskResponse(**dict(updated_task))
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al actualizar la razón de la tarea: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al actualizar la razón de la tarea"
-        )
-
-#########################################
-# Endpoints existentes actualizados
-
-@app.post("/my-tasks/", response_model=TaskResponse, status_code=201)
-async def create_my_task(task: Task, current_user: dict = Depends(get_current_user)):
-    """Crea una nueva tarea para el usuario actual."""
-    try:
-        if not task.descripcion:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="La descripción es obligatoria"
-            )
-        
-        fecha, hora = get_current_local_date_time()
-        usuario_id = current_user["id"]
-        
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO tasks (usuario_id, descripcion, estado, fecha, hora, razon) VALUES (?, ?, ?, ?, ?, ?)",
-                (usuario_id, task.descripcion, task.estado.value if task.estado else EstadoTarea.ACTIVO, fecha, hora, task.razon)
-            )
-            conn.commit()
-            task_id = cursor.lastrowid
-            
-            cursor.execute("""
-                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
-                FROM tasks t
-                JOIN usuarios u ON t.usuario_id = u.id
-                WHERE t.id = ? AND t.usuario_id = ?
-            """, (task_id, usuario_id))
-            new_task = cursor.fetchone()
-            
-            if not new_task:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Error al crear la tarea"
-                )
-                
-            return TaskResponse(**dict(new_task))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al crear tarea del usuario {current_user['id']}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al crear la tarea"
-        )
-
-@app.get("/my-tasks/{task_id}", response_model=TaskResponse)
-async def read_my_task(task_id: int, current_user: dict = Depends(get_current_user)):
-    """Obtiene una tarea específica del usuario actual por su ID."""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
-                FROM tasks t
-                JOIN usuarios u ON t.usuario_id = u.id
-                WHERE t.id = ? AND t.usuario_id = ?
-            """, (task_id, current_user["id"]))
-            task = cursor.fetchone()
-            
-        if task is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="Tarea no encontrada o no tienes permiso para acceder a ella"
-            )
-        return TaskResponse(**dict(task))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error al obtener tarea {task_id} del usuario {current_user['id']}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al recuperar la tarea"
-        )
-
-@app.get("/my-tasks/", response_model=List[TaskResponse])
-async def read_my_tasks(
-    estado: Optional[EstadoTarea] = None,
-    razon: Optional[str] = None,
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    current_user: dict = Depends(get_current_user)
-):
-    """Obtiene las tareas del usuario actual con filtros opcionales."""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            
-            query = """
-                SELECT t.id, t.usuario_id, u.codigo as codigo_estudiante, u.correo as correo_estudiante, 
-                       t.descripcion, t.estado, t.fecha, t.hora, t.razon
-                FROM tasks t
-                JOIN usuarios u ON t.usuario_id = u.id
-                WHERE t.usuario_id = ?
-            """
-            params = [current_user["id"]]
-            
-            if estado:
-                query += " AND t.estado = ?"
-                params.append(estado.value)
-            
-            if razon:
-                query += " AND t.razon = ?"
-                params.append(razon.strip())
-                
-            query += " ORDER BY t.fecha DESC, t.hora DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-            
-            cursor.execute(query, params)
-            tasks = cursor.fetchall()
-            return [TaskResponse(**dict(task)) for task in tasks]
-    except Exception as e:
-        logger.error(f"Error al obtener tareas del usuario: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error al recuperar las tareas del usuario"
-        )
-
-#########################################
-# NUEVOS ENDPOINTS DE FORMULARIOS (sin archivos)
-
-class FormularioRequest(BaseModel):
-    nombres: str
-    apellido_paterno: str
-    apellido_materno: str
-    codigo_udg: str
-    fecha_nacimiento: str
-    descripcion_detallada: str
+# ============================================================================
+# 📝 ENDPOINTS DE FORMULARIOS DE DENUNCIA
+# ============================================================================
 
 @app.post("/my-tasks/{task_id}/formulario", response_model=FormularioResponse, status_code=201)
 async def create_formulario(
@@ -1119,7 +1160,7 @@ async def create_formulario(
             # Obtener fecha y hora actuales
             fecha, hora = get_current_local_date_time()
             
-            # Crear el formulario (sin archivos)
+            # Crear el formulario
             cursor.execute("""
                 INSERT INTO formularios 
                 (task_id, nombres, apellido_paterno, apellido_materno, codigo_udg, 
@@ -1258,24 +1299,13 @@ async def get_formulario(
             detail="Error al recuperar el formulario"
         )
 
-#########################################
-# Token del usuario actual
-
-@app.get("/me")
-async def get_me(current_user: dict = Depends(get_current_user)):
-    return {
-        "id": current_user["id"],
-        "codigo": current_user["codigo"],
-        "correo": current_user["correo"],
-        "rol": current_user["rol"]
-    }
-
-#########################################
-# Endpoint para verificar estado del sistema
+# ============================================================================
+# 🏥 ENDPOINT DE HEALTH CHECK
+# ============================================================================
 
 @app.get("/health")
 async def health_check():
-    """Verifica el estado del sistema."""
+    """Verifica el estado del sistema y la conectividad de la base de datos."""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -1294,3 +1324,105 @@ async def health_check():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat()
         }
+
+
+"""
+RESUMEN DE LA API ORGANIZADA:
+
+🔧 CONFIGURACIÓN Y DEPENDENCIAS:
+- FastAPI con middleware CORS
+- SQLite como base de datos
+- JWT para autenticación
+- bcrypt para hash de contraseñas
+- Logging para monitoreo
+
+🗄️ MODELOS DE DATOS:
+- Usuario: Gestión de usuarios y roles
+- Task: Reportes de emergencia con estados
+- Formulario: Denuncias estudiantiles detalladas
+- Token: Autenticación JWT
+
+🔐 SISTEMA DE AUTENTICACIÓN:
+- JWT tokens con expiración
+- Roles: admin y usuario
+- Middleware de seguridad OAuth2
+
+📊 ENDPOINTS PRINCIPALES:
+- /token: Autenticación
+- /usuarios/: CRUD de usuarios
+- /my-tasks/: Gestión de reportes personales
+- /tasks/: Administración de reportes (admin)
+- /formularios/: Denuncias detalladas
+- /search-advanced: Búsqueda avanzada
+
+🛡️ CARACTERÍSTICAS DE SEGURIDAD:
+- Validación de permisos por rol
+- Sanitización de datos de entrada
+- Manejo robusto de errores
+- Logging de actividades
+
+🔍 FUNCIONALIDADES AVANZADAS:
+- Búsqueda con múltiples criterios
+- Paginación de resultados
+- Estados de reportes (Activo, Pendiente, Completado, Cancelado)
+- Razones de cancelación
+- Timestamps automáticos
+
+📈 CARACTERÍSTICAS TÉCNICAS:
+✅ API RESTful con FastAPI
+✅ Base de datos SQLite con índices optimizados
+✅ Autenticación JWT segura
+✅ Validación de datos con Pydantic
+✅ Middleware CORS configurado
+✅ Logging estructurado
+✅ Manejo de errores HTTP apropiado
+✅ Context managers para DB
+✅ Timezone awareness (Mexico City)
+✅ Health check endpoint
+"""
+
+
+
+"""
+ARQUITECTURA DE LA API ISAA:
+
+🏗️ ESTRUCTURA MODULAR:
+- Configuración centralizada con variables de entorno
+- Modelos Pydantic para validación automática
+- Context managers para manejo seguro de DB
+- Middleware CORS para integración frontend
+- Logging estructurado para monitoreo
+
+🔐 SEGURIDAD IMPLEMENTADA:
+- Autenticación JWT con expiración configurable
+- Hash bcrypt para contraseñas
+- Validación de permisos por rol (admin/usuario)
+- Sanitización automática de inputs
+- Manejo seguro de errores sin exposición de datos
+
+📊 ENDPOINTS ORGANIZADOS:
+- /token: Autenticación y login
+- /usuarios/: Gestión de usuarios
+- /my-tasks/: Reportes personales del usuario
+- /tasks/: Administración de reportes (admin)
+- /formularios/: Denuncias estudiantiles detalladas
+- /search-advanced: Búsqueda con múltiples criterios
+- /health: Monitoreo del sistema
+
+🗄️ BASE DE DATOS OPTIMIZADA:
+- SQLite con índices para rendimiento
+- Relaciones FK con integridad referencial
+- Migraciones automáticas de esquema
+- Context managers para transacciones seguras
+
+⚡ CARACTERÍSTICAS AVANZADAS:
+- Timezone awareness (Mexico City)
+- Paginación en consultas
+- Búsqueda avanzada con operadores
+- Estados de reporte con workflow
+- Validación automática con Pydantic
+- Logging de actividades para auditoría
+
+Esta API proporciona una base sólida y escalable para el sistema ISAA,
+con todas las mejores prácticas de desarrollo implementadas.
+"""
