@@ -15,9 +15,7 @@ import logging
 from enum import Enum
 import json
 
-# ============================================================================
-# 📋 CONFIGURACIÓN INICIAL Y CONSTANTES
-# ============================================================================
+# CONFIGURACIÓN INICIAL Y CONSTANTES
 
 # Configuración de logging estructurado
 logging.basicConfig(
@@ -39,9 +37,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "db/isaa.db")
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY no configurada en .env")
 
-# ============================================================================
-# 🔐 CONFIGURACIÓN DE SEGURIDAD
-# ============================================================================
+
+# CONFIGURACIÓN DE SEGURIDAD
 
 # Contexto de encriptación para contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -49,9 +46,8 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Esquema OAuth2 para autenticación JWT
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# ============================================================================
-# 📊 ENUMERACIONES Y TIPOS DE DATOS
-# ============================================================================
+
+# ENUMERACIONES Y TIPOS DE DATOS
 
 class EstadoTarea(str, Enum):
     """Estados posibles para las tareas/reportes."""
@@ -60,10 +56,8 @@ class EstadoTarea(str, Enum):
     PENDIENTE = "Pendiente"
     CANCELADO = "Cancelado"
 
-# ============================================================================
-# 🏗️ MODELOS PYDANTIC PARA VALIDACIÓN DE DATOS
-# ============================================================================
 
+# MODELOS PYDANTIC PARA VALIDACIÓN DE DATOS
 class Usuario(BaseModel):
     """Modelo para usuarios del sistema."""
     id: Optional[int] = None
@@ -177,9 +171,8 @@ class FormularioRequest(BaseModel):
     fecha_nacimiento: str
     descripcion_detallada: str
 
-# ============================================================================
-# 🛠️ FUNCIONES DE UTILIDAD Y HELPERS
-# ============================================================================
+
+# FUNCIONES DE UTILIDAD Y HELPERS
 
 @contextmanager
 def get_db_connection():
@@ -216,9 +209,8 @@ def get_current_local_date_time():
         hora = now.strftime("%H:%M")
         return fecha, hora
 
-# ============================================================================
-# 🔐 FUNCIONES DE AUTENTICACIÓN Y SEGURIDAD
-# ============================================================================
+
+# FUNCIONES DE AUTENTICACIÓN Y SEGURIDAD
 
 def verify_password(plain_password, hashed_password):
     """Verifica que una contraseña coincida con su hash.""" 
@@ -302,9 +294,8 @@ def get_current_admin(current_user: dict = Depends(get_current_user)):
         )
     return current_user
 
-# ============================================================================
-# 🗄️ INICIALIZACIÓN DE BASE DE DATOS
-# ============================================================================
+
+# INICIALIZACIÓN DE BASE DE DATOS
 
 def init_db():
     """Inicializa la base de datos si no existe."""
@@ -399,9 +390,8 @@ def init_db():
             detail="Error al inicializar la base de datos"
         )
 
-# ============================================================================
-# 🚀 INICIALIZACIÓN DE FASTAPI
-# ============================================================================
+
+# INICIALIZACIÓN DE FASTAPI
 
 app = FastAPI(title="ISAA API - Task Manager", version="1.4.0")
 
@@ -422,9 +412,8 @@ async def startup_event():
     except Exception as e:
         logger.critical(f"Error crítico al iniciar la aplicación: {e}")
 
-# ============================================================================
-# 🔐 ENDPOINTS DE AUTENTICACIÓN
-# ============================================================================
+
+# ENDPOINTS DE AUTENTICACIÓN
 
 @app.post("/token", response_model=Token)
 async def login_for_access_token(
@@ -469,9 +458,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
         "rol": current_user["rol"]
     }
 
-# ============================================================================
-# 👥 ENDPOINTS DE GESTIÓN DE USUARIOS
-# ============================================================================
+# ENDPOINTS DE GESTIÓN DE USUARIOS
 
 @app.post("/usuarios/", response_model=UsuarioResponse, status_code=201)
 async def create_user(usuario: Usuario):
@@ -568,9 +555,8 @@ async def read_user(user_id: int, current_user: dict = Depends(get_current_user)
             detail="Error al recuperar información del usuario"
         )
 
-# ============================================================================
-# 📋 ENDPOINTS DE GESTIÓN DE TAREAS/REPORTES PERSONALES
-# ============================================================================
+
+# ENDPOINTS DE GESTIÓN DE TAREAS/REPORTES PERSONALES
 
 @app.post("/my-tasks/", response_model=TaskResponse, status_code=201)
 async def create_my_task(task: Task, current_user: dict = Depends(get_current_user)):
@@ -758,9 +744,8 @@ async def update_task_with_razon(
             detail="Error al actualizar la razón de la tarea"
         )
 
-# ============================================================================
-# 🔧 ENDPOINTS DE ADMINISTRACIÓN DE TAREAS (ADMIN)
-# ============================================================================
+
+# ENDPOINTS DE ADMINISTRACIÓN DE TAREAS (ADMIN)
 
 @app.get("/tasks/{task_id}", response_model=TaskResponse)
 async def read_task(task_id: int, current_user: dict = Depends(get_current_user)):
@@ -948,9 +933,8 @@ async def delete_task(task_id: int, current_user: dict = Depends(get_current_use
             detail="Error al eliminar la tarea"
         )
 
-# ============================================================================
-# 🔍 ENDPOINT DE BÚSQUEDA AVANZADA
-# ============================================================================
+
+# ENDPOINT DE BÚSQUEDA AVANZADA
 
 @app.get("/search-advanced", response_model=List[TaskResponse])
 async def search_advanced(
@@ -1120,10 +1104,8 @@ async def search_advanced(
           detail="Error al procesar la búsqueda avanzada"
       )
 
-# ============================================================================
-# 📝 ENDPOINTS DE FORMULARIOS DE DENUNCIA
-# ============================================================================
 
+# ENDPOINTS DE FORMULARIOS DE DENUNCIA
 @app.post("/my-tasks/{task_id}/formulario", response_model=FormularioResponse, status_code=201)
 async def create_formulario(
     task_id: int,
@@ -1299,55 +1281,29 @@ async def get_formulario(
             detail="Error al recuperar el formulario"
         )
 
-# ============================================================================
-# 🏥 ENDPOINT DE HEALTH CHECK
-# ============================================================================
-
-@app.get("/health")
-async def health_check():
-    """Verifica el estado del sistema y la conectividad de la base de datos."""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            
-        return {
-            "status": "ok",
-            "database": "connected",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error en health check: {e}")
-        return {
-            "status": "error",
-            "database": "disconnected",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
 
 """
 RESUMEN DE LA API ORGANIZADA:
 
-🔧 CONFIGURACIÓN Y DEPENDENCIAS:
+CONFIGURACIÓN Y DEPENDENCIAS:
 - FastAPI con middleware CORS
 - SQLite como base de datos
 - JWT para autenticación
 - bcrypt para hash de contraseñas
 - Logging para monitoreo
 
-🗄️ MODELOS DE DATOS:
+MODELOS DE DATOS:
 - Usuario: Gestión de usuarios y roles
 - Task: Reportes de emergencia con estados
 - Formulario: Denuncias estudiantiles detalladas
 - Token: Autenticación JWT
 
-🔐 SISTEMA DE AUTENTICACIÓN:
+SISTEMA DE AUTENTICACIÓN:
 - JWT tokens con expiración
 - Roles: admin y usuario
 - Middleware de seguridad OAuth2
 
-📊 ENDPOINTS PRINCIPALES:
+ENDPOINTS PRINCIPALES:
 - /token: Autenticación
 - /usuarios/: CRUD de usuarios
 - /my-tasks/: Gestión de reportes personales
@@ -1355,52 +1311,38 @@ RESUMEN DE LA API ORGANIZADA:
 - /formularios/: Denuncias detalladas
 - /search-advanced: Búsqueda avanzada
 
-🛡️ CARACTERÍSTICAS DE SEGURIDAD:
+CARACTERÍSTICAS DE SEGURIDAD:
 - Validación de permisos por rol
 - Sanitización de datos de entrada
 - Manejo robusto de errores
 - Logging de actividades
 
-🔍 FUNCIONALIDADES AVANZADAS:
+FUNCIONALIDADES AVANZADAS:
 - Búsqueda con múltiples criterios
 - Paginación de resultados
 - Estados de reportes (Activo, Pendiente, Completado, Cancelado)
 - Razones de cancelación
 - Timestamps automáticos
-
-📈 CARACTERÍSTICAS TÉCNICAS:
-✅ API RESTful con FastAPI
-✅ Base de datos SQLite con índices optimizados
-✅ Autenticación JWT segura
-✅ Validación de datos con Pydantic
-✅ Middleware CORS configurado
-✅ Logging estructurado
-✅ Manejo de errores HTTP apropiado
-✅ Context managers para DB
-✅ Timezone awareness (Mexico City)
-✅ Health check endpoint
 """
-
-
 
 """
 ARQUITECTURA DE LA API ISAA:
 
-🏗️ ESTRUCTURA MODULAR:
+ESTRUCTURA MODULAR:
 - Configuración centralizada con variables de entorno
 - Modelos Pydantic para validación automática
 - Context managers para manejo seguro de DB
 - Middleware CORS para integración frontend
 - Logging estructurado para monitoreo
 
-🔐 SEGURIDAD IMPLEMENTADA:
+SEGURIDAD IMPLEMENTADA:
 - Autenticación JWT con expiración configurable
 - Hash bcrypt para contraseñas
 - Validación de permisos por rol (admin/usuario)
 - Sanitización automática de inputs
 - Manejo seguro de errores sin exposición de datos
 
-📊 ENDPOINTS ORGANIZADOS:
+ENDPOINTS ORGANIZADOS:
 - /token: Autenticación y login
 - /usuarios/: Gestión de usuarios
 - /my-tasks/: Reportes personales del usuario
@@ -1409,13 +1351,13 @@ ARQUITECTURA DE LA API ISAA:
 - /search-advanced: Búsqueda con múltiples criterios
 - /health: Monitoreo del sistema
 
-🗄️ BASE DE DATOS OPTIMIZADA:
+BASE DE DATOS OPTIMIZADA:
 - SQLite con índices para rendimiento
 - Relaciones FK con integridad referencial
 - Migraciones automáticas de esquema
 - Context managers para transacciones seguras
 
-⚡ CARACTERÍSTICAS AVANZADAS:
+CARACTERÍSTICAS AVANZADAS:
 - Timezone awareness (Mexico City)
 - Paginación en consultas
 - Búsqueda avanzada con operadores
