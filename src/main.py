@@ -14,6 +14,7 @@ from passlib.context import CryptContext
 import logging
 from enum import Enum
 import json
+import zoneinfo
 
 # CONFIGURACIÓN INICIAL Y CONSTANTES
 
@@ -197,13 +198,29 @@ def get_db_connection():
 def get_current_local_date_time():
     """Obtiene la fecha y hora local en el formato requerido (Mexico City)."""
     try:
-        tz = zoneinfo.ZoneInfo("America/Mexico_City")
-        now = datetime.now(tz)
-        fecha = now.strftime("%d/%m/%Y")
-        hora = now.strftime("%H:%M")
+        # Intentar con zoneinfo primero
+        try:
+            tz = zoneinfo.ZoneInfo("America/Mexico_City")
+            now = datetime.now(tz)
+            fecha = now.strftime("%d/%m/%Y")
+            hora = now.strftime("%H:%M")
+            return fecha, hora
+        except:
+            pass
+        
+        # Fallback: Calcular manualmente la hora de México
+        utc_now = datetime.utcnow()
+        month = utc_now.month
+        if 4 <= month <= 10:
+            mexico_time = utc_now - timedelta(hours=6)
+        
+        fecha = mexico_time.strftime("%d/%m/%Y")
+        hora = mexico_time.strftime("%H:%M")
         return fecha, hora
+        
     except Exception as e:
         logger.error(f"Error al obtener fecha y hora: {e}")
+        # Último recurso
         now = datetime.utcnow()
         fecha = now.strftime("%d/%m/%Y")
         hora = now.strftime("%H:%M")
